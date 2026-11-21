@@ -39,13 +39,17 @@ class Resp:
             raise rfd_bot.requests.HTTPError(str(self.status_code))
 
 
-def make_session(topics, fail_send_ids=()):
+def make_session(topics, fail_send_ids=(), bad_msg_ids=()):
     s = mock.Mock()
     sent = []
     s.get.side_effect = lambda url, **kw: Resp({"topics": topics})
     def post(url, json=None, **kw):
         if any(str(i) in json["text"] for i in fail_send_ids):
-            return Resp({"ok": False, "error_code": 400, "description": "boom"})
+            return Resp({"ok": False, "error_code": 403,
+                         "description": "Forbidden: bot is not a member of the channel chat"})
+        if any(str(i) in json["text"] for i in bad_msg_ids):
+            return Resp({"ok": False, "error_code": 400,
+                         "description": "Bad Request: can't parse entities"})
         sent.append(json["text"])
         return Resp({"ok": True, "result": {}})
     s.post.side_effect = post
@@ -87,12 +91,24 @@ def test_flow():
         s, sent = make_session(newer)
         assert rfd_bot.check_once(s, cfg) == 1 and "Retry me" in sent[0]
 
-        # Burst over the cap: only newest N posted, rest marked seen
+        # Burst over the cap: oldest N now, the rest on later runs, nothing dropped
         cfg["max_posts"] = 2
         burst = [topic(2710000 + i, f"B{i}") for i in range(5)] + newer
         s, sent = make_session(burst)
-        assert rfd_bot.check_once(s, cfg) == 2 and "B3" in sent[0] and "B4" in sent[1]
+        assert rfd_bot.check_once(s, cfg) == 2 and "B0" in sent[0] and "B1" in sent[1]
         s, sent = make_session(burst)
+        assert rfd_bot.check_once(s, cfg) == 2 and "B2" in sent[0] and "B3" in sent[1]
+        s, sent = make_session(burst)
+        assert rfd_bot.check_once(s, cfg) == 1 and "B4" in sent[0]
+        s, sent = make_session(burst)
+        assert rfd_bot.check_once(s, cfg) == 0
+
+        # A single unpostable message is skipped and doesn't block later deals
+        cfg["max_posts"] = 40
+        bad = [topic(2720002, "Good after"), topic(2720001, "Bad msg")] + burst
+        s, sent = make_session(bad, bad_msg_ids=[2720001])
+        assert rfd_bot.check_once(s, cfg) == 1 and "Good after" in sent[0]
+        s, sent = make_session(bad)
         assert rfd_bot.check_once(s, cfg) == 0
 
 
