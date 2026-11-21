@@ -18,7 +18,7 @@ Config (environment variables or a .env file next to this script)
   STATE_FILE           where seen thread IDs are stored, default state.json
   POST_ON_FIRST_RUN    "1" to post the current deals on the very first run,
                        default "0" (first run only records what's there)
-  MAX_POSTS_PER_RUN    safety cap per check, default 15
+  MAX_POSTS_PER_RUN    max posts per check, default 40 (extras go out next check)
 """
 
 from __future__ import annotations
@@ -174,6 +174,12 @@ def fetch_deals(session: requests.Session) -> list[Deal]:
 
 # ---------------------------------------------------------------- telegram
 
+class TelegramError(Exception):
+    def __init__(self, code: int, description: str):
+        super().__init__(f"Telegram error {code}: {description}")
+        self.code, self.description = code, description
+
+
 def tg(session: requests.Session, token: str, method: str, **params):
     r = session.post(f"https://api.telegram.org/bot{token}/{method}", json=params, timeout=20)
     body = r.json()
@@ -183,7 +189,7 @@ def tg(session: requests.Session, token: str, method: str, **params):
             log.warning("Telegram rate limit, waiting %ss", wait)
             time.sleep(wait + 1)
             return tg(session, token, method, **params)
-        raise RuntimeError(f"Telegram {method} failed: {body}")
+        raise TelegramError(int(body.get("error_code") or 0), str(body.get("description") or body))
     return body["result"]
 
 
@@ -222,11 +228,15 @@ def check_once(session: requests.Session, cfg: dict) -> int:
 
     if not state.get("initialized") and not cfg["post_on_first_run"]:
         log.info("First run: recorded %d current threads, nothing posted", len(deals))
+        seen.update(d.id for d in deals)
         new_to_post = []
     else:
-        new_to_post = new[-cfg["max_posts"]:]
+        # Oldest first. Anything over the cap stays unseen and goes out next run,
+        # so no deal is ever skipped.
+        new_to_post = new[:cfg["max_posts"]]
         if len(new) > len(new_to_post):
-            log.warning("%d new threads, posting only the newest %d", len(new), len(new_to_post))
+            log.warning("%d new threads, posting the oldest %d now, the rest next run",
+                        len(new), len(new_to_post))
 
     posted = 0
     for d in new_to_post:
@@ -235,15 +245,21 @@ def check_once(session: requests.Session, cfg: dict) -> int:
             posted += 1
             seen.add(d.id)
             log.info("Posted %s | %s", d.id, d.title)
-            time.sleep(3)  # stay well under Telegram's group limit
+            time.sleep(3)  # stay well under Telegram's limit of 20 posts a minute per chat
+        except TelegramError as e:
+            if e.code == 400 and "chat" not in e.description.lower():
+                # This one message is unpostable (bad formatting etc.). Skip it so it
+                # can't block every later deal.
+                log.error("Skipping %s, Telegram rejected it: %s", d.id, e.description)
+                seen.add(d.id)
+                continue
+            log.error("Could not post %s: %s", d.id, e)
+            break  # channel/token problem: retry this and later ones next check
         except Exception as e:  # noqa: BLE001
             log.error("Could not post %s: %s", d.id, e)
-            break  # retry this and later ones next check
+            break  # network problem: retry next check
 
-    # Everything we skipped deliberately (first run / over cap) is marked seen too
-    if not new_to_post or posted == len(new_to_post):
-        seen.update(d.id for d in deals)
-
+    log.info("Check done: %d new, %d posted", len(new), posted)
     state["seen"] = list(seen)
     state["initialized"] = True
     save_state(cfg["state_file"], state)
@@ -279,7 +295,7 @@ def main() -> None:
         "chat_id": env("TELEGRAM_CHAT_ID"),
         "state_file": Path(os.environ.get("STATE_FILE") or SCRIPT_DIR / "state.json"),
         "post_on_first_run": os.environ.get("POST_ON_FIRST_RUN", "0") == "1",
-        "max_posts": int(os.environ.get("MAX_POSTS_PER_RUN", "15")),
+        "max_posts": int(os.environ.get("MAX_POSTS_PER_RUN", "40")),
     }
 
     if "--test" in sys.argv:
