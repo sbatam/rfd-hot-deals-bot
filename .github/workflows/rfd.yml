@@ -1,23 +1,30 @@
 name: RFD Hot Deals to Telegram
 
 on:
-  schedule:
-    - cron: "*/5 * * * *"  # GitHub's minimum; runs can lag a few minutes at busy times
+  # Main trigger: cron-job.org calls workflow_dispatch every 5 minutes.
   workflow_dispatch:
     inputs:
       test_post:
         description: "Also post the newest deal once, to check the channel works"
         type: boolean
         default: false
+  # Backup only. GitHub's own timer is unreliable and often skips runs.
+  # Offset minutes avoid the busiest times (:00, :05, :10 ...).
+  schedule:
+    - cron: "3,13,23,33,43,53 * * * *"
 
+# Only one run at a time, so the saved list of posted deals never gets mixed up.
 concurrency:
   group: rfd-bot
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
 
@@ -28,6 +35,7 @@ jobs:
 
       - run: pip install -r requirements.txt
 
+      # Remembers which threads were already posted between runs
       - name: Restore seen threads
         uses: actions/cache/restore@v4
         with:
