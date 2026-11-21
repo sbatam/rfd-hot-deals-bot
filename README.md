@@ -20,13 +20,22 @@ Posting to a group works the same way: add the bot to the group and use the grou
 
 ## 2. Choose where it runs
 
-### Option A: GitHub Actions (free, checks every ~5 minutes)
+### Option A: GitHub Actions (free if the repo is public, checks about every 5 minutes)
 
-1. Push this folder to a new **private** GitHub repo.
+1. Push this folder to a new **public** GitHub repo (see the note below on minutes).
 2. Repo **Settings > Secrets and variables > Actions**, add `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`.
 3. **Actions** tab > enable workflows > run "RFD Hot Deals to Telegram" once manually to seed it.
 
-Five minutes is GitHub's minimum interval and runs can lag at busy times. GitHub also pauses scheduled workflows after 60 days with no repo activity; re-enable from the Actions tab if that happens.
+Five minutes is GitHub's minimum interval. Scheduled runs are best effort: they can be delayed for hours or skipped when GitHub is busy (worst roughly 00:00 to 08:00 UTC), and new repos get lowest priority. GitHub also pauses scheduled workflows after 60 days with no repo activity; re-enable from the Actions tab if that happens.
+
+**Use an outside timer.** GitHub's own schedule is too unreliable for 5 minute checks (in testing it fired once in 13 hours). The workflow keeps a backup schedule, but the main trigger is a free cron-job.org job that calls GitHub every 5 minutes:
+
+- URL: `https://api.github.com/repos/<owner>/<repo>/actions/workflows/rfd.yml/dispatches`
+- Method: POST, body `{"ref":"main"}`
+- Headers: `Accept: application/vnd.github+json`, `Authorization: Bearer <token>`, `X-GitHub-Api-Version: 2022-11-28`, `Content-Type: application/json`
+- Token: a fine-grained GitHub token limited to this repo with **Actions: Read and write**. Note its expiry date and renew it before then.
+
+**Make the repo public.** Private repos get 2,000 free Actions minutes a month, and every run is billed as at least 1 minute. A run every 5 minutes is about 8,600 minutes a month, so a private repo runs out in about a week. Public repos get unlimited free minutes. Secrets stay hidden either way.
 
 ### Option B: Any always-on machine (near real time, checks every 60 seconds)
 
@@ -65,7 +74,7 @@ Then `sudo systemctl enable --now rfd-bot` and watch logs with `journalctl -u rf
 | `TELEGRAM_CHAT_ID` | required | The group's ID |
 | `POLL_SECONDS` | 60 | Loop interval (minimum 30) |
 | `POST_ON_FIRST_RUN` | 0 | Set to 1 to post the current page on the first run |
-| `MAX_POSTS_PER_RUN` | 15 | Safety cap if many threads appear at once (the newest are posted) |
+| `MAX_POSTS_PER_RUN` | 40 | Most posts per check. Extras go out on the next check, nothing is skipped |
 | `STATE_FILE` | state.json | Where posted thread IDs are stored |
 
 ## Troubleshooting
