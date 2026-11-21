@@ -2,7 +2,7 @@ name: RFD Hot Deals to Telegram
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "*/5 * * * *"  # GitHub's minimum; runs can lag a few minutes at busy times
   workflow_dispatch:
     inputs:
       test_post:
